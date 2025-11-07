@@ -1,0 +1,45 @@
+x-common-env: &common-env
+  INFLUX_TOKEN: FSh16h6Eyq2QhrV9WTtvav-01qClt2iXzVQPBltCdpLO9ZqHUggSFElcd03ghs5uwCrIVXioPogLbHJ1brANXw==
+  INFLUX_ORG: INAF
+
+services:
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb
+    ports:
+      - "8096:8086"
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=usergamma
+      - DOCKER_INFLUXDB_INIT_PASSWORD=ASTRI1int01
+      - DOCKER_INFLUXDB_INIT_ORG=INAF
+      - DOCKER_INFLUXDB_INIT_BUCKET=MONITORING
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=FSh16h6Eyq2QhrV9WTtvav-01qClt2iXzVQPBltCdpLO9ZqHUggSFElcd03ghs5uwCrIVXioPogLbHJ1brANXw==
+      - INFLUXD_LOG_LEVEL=debug
+
+  flask-app:
+    build: .
+    container_name: flask-update-data
+    ports:
+      - "4999:4999"
+    environment:
+      <<: *common-env
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_BUCKET: MONITORING
+      OUTPUT_FILE: measurement.txt
+    volumes:
+      - ./:/app
+    depends_on:
+      - influxdb
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4999/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  influxdb_data:
+
