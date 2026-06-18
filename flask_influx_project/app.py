@@ -20,9 +20,36 @@ if INFLUX_URL and INFLUX_TOKEN and INFLUX_ORG and INFLUX_BUCKET:
     influx_client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG, timeout=10_000)
     write_api = influx_client.write_api(write_options=WriteOptions(batch_size=1))
 
+
+def _parse_float(val):
+    if val is None or val == "":
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_int(val):
+    if val is None or val == "":
+        return None
+    try:
+        return int(float(val))
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_timestamp(data):
+    ts = _parse_int(data.get("timestamp"))
+    if ts and ts > 0:
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    return datetime.now(timezone.utc)
+
+
 @app.get("/healthz")
 def healthz():
     return "OK", 200
+
 
 @app.post("/update_data")
 def update_data():
@@ -31,45 +58,46 @@ def update_data():
         data = request.get_json(silent=True) or {}
     data.update(request.form.to_dict())
 
-    valore = data.get("valore")
-    temperature = data.get("temperature")
-    pressure    = data.get("pressure")
-    altitude    = data.get("altitude")
-    fintSrc = data.get("fintSrc")
-    flightningDistKm = data.get("flightningDistKm")
-    flightningEnergyVal = data.get("flightningEnergyVal")
+    temperature = _parse_float(data.get("temperature"))
+    pressure    = _parse_float(data.get("pressure"))      # hPa (come inviato dall'Arduino)
+    altitude    = _parse_float(data.get("altitude"))
+    humidity    = _parse_float(data.get("humidity"))
+    fint_src    = _parse_int(data.get("fintSrc")) or 0
+    lightning_dist = _parse_int(data.get("flightningDistKm")) or 0
+    lightning_energy = _parse_int(data.get("flightningEnergyVal")) or 0
 
-    # --- normalizzazione della pressure ---
-    if pressure is not None:
-        try:
-            pressure = float(pressure) / 100.0
-            pressure = str(pressure)   # riconversione in stringa
-        except ValueError:
-            pressure = None
-
-
-    ts_dt = datetime.now(timezone.utc)
-
-    ts_iso = ts_dt.isoformat().replace("+00:00","Z")
+    ts_dt = _resolve_timestamp(data)
+    ts_iso = ts_dt.isoformat().replace("+00:00", "Z")
 
     print(
-        f"[update_data] ts={ts_iso} valore={valore} T={temperature} P={pressure} A={altitude} fsrc={fintSrc} flightningDistKm={flightningDistKm} flightningEnergyVal={flightningEnergyVal}",
-        flush=True
+        f"[update_data] ts={ts_iso} T={temperature} P={pressure} A={altitude} H={humidity} "
+        f"fintSrc={fint_src} flightningDistKm={lightning_dist} flightningEnergyVal={lightning_energy}",
+        flush=True,
     )
 
-    line = f"{ts_iso},{temperature},{pressure},{altitude},{fintSrc},{flightningDistKm},{flightningEnergyVal}\n"
+    line = (
+        f"{ts_iso},{temperature},{pressure},{altitude},{humidity},"
+        f"{fint_src},{lightning_dist},{lightning_energy}\n"
+    )
     with _lock:
         with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
             f.write(line)
 
     if write_api is not None:
         try:
+            p = Point("sensor").tag("source", "arduino")
+            if temperature is not None:
+                p = p.field("temperature", temperature)
+            if pressure is not None:
+                p = p.field("pressure", pressure)
+            if altitude is not None:
+                p = p.field("altitude", altitude)
+            if humidity is not None:
+                p = p.field("humidity", humidity)
             p = (
-                Point("sensor")
-                .tag("source", "flask")
-                .field("temperature", float(temperature) if temperature is not None else None)
-                .field("pressure", float(pressure) if pressure is not None else None)
-                .field("altitude", float(altitude) if altitude is not None else None)
+                p.field("fint_src", fint_src)
+                .field("lightning_dist_reg", lightning_dist)
+                .field("lightning_energy", lightning_energy)
                 .time(ts_dt)
             )
             write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=p)
@@ -77,6 +105,7 @@ def update_data():
             print(f"[influx] write failed: {e}", flush=True)
 
     return "Dati ricevuti con successo!", 200
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=4999)
